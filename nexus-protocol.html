@@ -97,6 +97,10 @@ canvas#c{display:block;width:100%;height:100%;position:fixed;inset:0}
 /* Scanlines + vignette */
 #scanlines{position:fixed;inset:0;pointer-events:none;z-index:100;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.05) 2px,rgba(0,0,0,.05) 4px)}
 #vignette{position:fixed;inset:0;pointer-events:none;z-index:99;background:radial-gradient(ellipse at center,transparent 52%,rgba(0,0,0,.72) 100%)}
+
+/* ── FULLSCREEN BUTTON ───────────────────────────────── */
+#fs-btn{position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:200;background:rgba(0,0,0,.55);border:1px solid rgba(0,255,200,.28);color:rgba(0,255,200,.65);font-size:15px;width:36px;height:36px;cursor:pointer;border-radius:5px;display:flex;align-items:center;justify-content:center;transition:all .2s;padding:0;line-height:1}
+#fs-btn:hover,#fs-btn:active{background:rgba(0,255,200,.18);border-color:rgba(0,255,200,.7);color:#00ffcc;box-shadow:0 0 12px rgba(0,255,200,.35)}
 </style>
 </head>
 <body>
@@ -140,6 +144,7 @@ canvas#c{display:block;width:100%;height:100%;position:fixed;inset:0}
   <h1>NEXUS</h1>
   <div class="sub">PROTOCOL</div>
   <button class="btn" id="btn-start">[ INITIATE ]</button>
+  <button class="btn" id="btn-fs" style="font-size:.75rem">[ FULLSCREEN ]</button>
   <p class="tip">DESKTOP: WASD MOVE · MOUSE AIM · CLICK SHOOT · SPACE JUMP · R RELOAD · 1/2/3 WEAPONS<br>
   MOBILE: LEFT THUMB MOVE · DRAG RIGHT SIDE TO AIM · FIRE BUTTON TO SHOOT</p>
 </div>
@@ -191,6 +196,9 @@ canvas#c{display:block;width:100%;height:100%;position:fixed;inset:0}
 
 <div id="scanlines"></div>
 <div id="vignette"></div>
+
+<!-- Fullscreen toggle — always on top -->
+<button id="fs-btn" title="Fullscreen">⛶</button>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
@@ -253,6 +261,7 @@ let enemies=[],bullets=[],particles=[],pickups=[];
 const obstacles=[];
 const levelMeshes=[];
 let floorMat=null;
+let dynLights=[]; // animated lights updated every frame
 
 // ── THREE.JS ──────────────────────────────────────────
 const renderer=new THREE.WebGLRenderer({canvas:document.getElementById('c'),antialias:window.devicePixelRatio<2});
@@ -260,6 +269,9 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio,1.8));
 renderer.setSize(window.innerWidth,window.innerHeight);
 renderer.shadowMap.enabled=false;
 renderer.setClearColor(0x000816);
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.25;
+renderer.outputEncoding=THREE.sRGBEncoding;
 
 const scene=new THREE.Scene();
 scene.fog=new THREE.FogExp2(0x000c20,0.013);
@@ -375,13 +387,61 @@ function buildLevel(){
     e2.position.set(cx,ch-.02,cz); scene.add(e2);
   });
 
-  // Lighting
-  scene.add(new THREE.AmbientLight(0x08101e,2.0));
-  const dir=new THREE.DirectionalLight(0x2244aa,.8); dir.position.set(5,18,8); scene.add(dir);
-  // Corner accent lights
-  [[-24,2,-24],[24,2,-24],[-24,2,24],[24,2,24]].forEach(([x,y,z])=>{
-    const pl=new THREE.PointLight(0x003366,.9,30); pl.position.set(x,y,z); scene.add(pl);
+  buildLighting();
+}
+
+function buildLighting(){
+  // Hemisphere — blue sky, deep-space ground
+  scene.add(new THREE.HemisphereLight(0x1a3a6e,0x000820,0.55));
+
+  // Directional fill
+  const dir=new THREE.DirectionalLight(0x3355bb,0.5);
+  dir.position.set(8,20,10); scene.add(dir);
+
+  // ── 9 ceiling point lights (3×3 grid) — flicker ─────
+  const ceilCols=[0x2255dd,0x0099cc,0x3322cc,0x1166cc,0x0077bb,0x4433cc,0x1188cc,0x2244dd,0x0055aa];
+  let ci=0;
+  for(let i=-1;i<=1;i++) for(let j=-1;j<=1;j++){
+    const pl=new THREE.PointLight(ceilCols[ci],0,30); ci++;
+    pl.position.set(i*14,WALL_H-1.3,j*14); scene.add(pl);
+    dynLights.push({light:pl, base:0.85+Math.random()*.5, ph:Math.random()*Math.PI*2, r1:1.4+Math.random()*1.6, r2:3.3+Math.random()*2.5, type:'ceil'});
+  }
+
+  // ── 8 perimeter uplights (cyan / magenta alternating) ─
+  const half=ARENA/2-2.5;
+  [[half,1.8,0],[-half,1.8,0],[0,1.8,half],[0,1.8,-half],
+   [half*.7,1.8,half*.7],[-half*.7,1.8,half*.7],[half*.7,1.8,-half*.7],[-half*.7,1.8,-half*.7]]
+    .forEach(([x,y,z],i)=>{
+      const col=i%2===0?0x00ffcc:0xff00bb;
+      const pl=new THREE.PointLight(col,0.7,26); pl.position.set(x,y,z); scene.add(pl);
+      dynLights.push({light:pl, base:0.55+Math.random()*.3, ph:Math.random()*Math.PI*2, r1:0.35+Math.random()*.4, r2:0, type:'perim'});
+    });
+
+  // ── Pillar accent lights ──────────────────────────────
+  [[-13,-13],[-13,0],[-13,13],[0,-13],[0,13],[13,-13],[13,0],[13,13],
+   [-22,-22],[-22,22],[22,-22],[22,22]].forEach(([px,pz],i)=>{
+    const col=i%2===0?0x00ffaa:0x4400ff;
+    const pl=new THREE.PointLight(col,0.5,10); pl.position.set(px,1.5,pz); scene.add(pl);
   });
+
+  // ── Low floor-bounce lights (4 quadrants, dim blue) ───
+  [[16,16],[-16,16],[16,-16],[-16,-16]].forEach(([x,z])=>{
+    const pl=new THREE.PointLight(0x0033aa,0.4,18); pl.position.set(x,0.3,z); scene.add(pl);
+  });
+}
+
+function updateLighting(dt,t){
+  for(const d of dynLights){
+    d.ph+=dt*(d.r1||1);
+    if(d.type==='ceil'){
+      // Multi-freq flicker: feels like faulty fluorescent + depth
+      const flicker=(0.82+0.12*Math.sin(d.ph*1.0))*(0.92+0.08*Math.sin(d.ph*2.3+1.1))*(0.96+0.04*Math.sin(d.ph*5.7+0.5));
+      d.light.intensity=d.base*flicker;
+    } else {
+      // Perimeter: slow breathe
+      d.light.intensity=d.base*(0.7+0.3*Math.sin(d.ph));
+    }
+  }
 }
 
 // ── WEAPON MODELS ─────────────────────────────────────
@@ -1043,6 +1103,8 @@ function loop(){
   totalTime+=dt;
   if(floorMat) floorMat.uniforms.time.value=totalTime;
 
+  updateLighting(dt,totalTime); // always animate lights
+
   if(STATE==='WAVE_IN'){
     waveTimer+=dt;
     if(waveTimer>2.5){document.getElementById('S-wave').style.display='none';STATE='PLAYING';spawnWave();showMsg(`WAVE ${wave} — ENGAGE`,'#ff88cc');}
@@ -1055,6 +1117,58 @@ function loop(){
   }
 
   renderer.render(scene,camera);
+}
+
+// ── FULLSCREEN + ORIENTATION LOCK ────────────────────
+function enterFS(){
+  const el=document.documentElement;
+  const fn=el.requestFullscreen||el.webkitRequestFullscreen||el.mozRequestFullScreen||el.msRequestFullscreen;
+  if(fn) fn.call(el).catch(()=>{});
+}
+function exitFS(){
+  const fn=document.exitFullscreen||document.webkitExitFullscreen||document.mozCancelFullScreen||document.msExitFullscreen;
+  if(fn) fn.call(document);
+}
+function lockLandscape(){
+  try{ screen.orientation.lock('landscape').catch(()=>{}); }catch(e){
+    try{ (screen.lockOrientation||screen.mozLockOrientation||screen.msLockOrientation||function(){}).call(screen,'landscape'); }catch(e2){}
+  }
+}
+function unlockOrientation(){
+  try{ screen.orientation.unlock(); }catch(e){}
+}
+
+function onFSChange(){
+  const isFS=!!(document.fullscreenElement||document.webkitFullscreenElement||document.mozFullScreenElement||document.msFullscreenElement);
+  // Update both buttons
+  const icon=isFS?'⛿':'⛶';
+  document.getElementById('fs-btn').textContent=icon;
+  if(document.getElementById('btn-fs')) document.getElementById('btn-fs').textContent=isFS?'[ EXIT FULLSCREEN ]':'[ FULLSCREEN ]';
+  if(isFS){
+    lockLandscape();
+    // Push history so Android back exits fullscreen
+    history.pushState({fs:1},'');
+  } else {
+    unlockOrientation();
+  }
+}
+['fullscreenchange','webkitfullscreenchange','mozfullscreenchange','msfullscreenchange'].forEach(ev=>document.addEventListener(ev,onFSChange));
+
+// Back button exits fullscreen
+window.addEventListener('popstate',e=>{
+  const isFS=!!(document.fullscreenElement||document.webkitFullscreenElement||document.mozFullScreenElement||document.msFullscreenElement);
+  if(isFS) exitFS();
+});
+
+document.getElementById('fs-btn').addEventListener('click',()=>{
+  const isFS=!!(document.fullscreenElement||document.webkitFullscreenElement);
+  isFS?exitFS():enterFS();
+});
+if(document.getElementById('btn-fs')){
+  document.getElementById('btn-fs').addEventListener('click',()=>{
+    const isFS=!!(document.fullscreenElement||document.webkitFullscreenElement);
+    isFS?exitFS():enterFS();
+  });
 }
 
 showScreen('menu');
